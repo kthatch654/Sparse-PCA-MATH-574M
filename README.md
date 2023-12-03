@@ -1,6 +1,6 @@
 # R Code for Tuning Sparse PCA Analysis using Index of Sparseness
 
-This R package provides a set of tools for performing and analyzing Sparse Principal Component Analysis (SPCA). It is designed to help in determining the optimal number of principal components, tuning the sparsity parameter (alpha) in SPCA using the Index of Sparseness (IS), and visualizing the results.
+This R code provides a set of tools for performing and analyzing Sparse Principal Component Analysis (SPCA). It is designed to help in determining the optimal number of principal components, tuning the sparsity parameter (alpha) in SPCA using the Index of Sparseness (IS), and visualizing the results.
 
 ## Functions
 
