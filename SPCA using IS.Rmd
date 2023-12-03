@@ -1,0 +1,152 @@
+---
+title: "SPCA tuning using IS"
+author: "Elliot Kennedy"
+date: "2023-12-03"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(MASS)  # For generating multivariate normal data
+library(ggplot2)
+library(elasticnet)  # Load the elasticnet package for sparse PCA
+library(matrixcalc)  # Load necessary library for nearestPD function
+library(Matrix)
+library(dplyr)
+```
+
+Generating toy data for sparse PCA analysis:
+
+```{r}
+# Function to generate a positive definite covariance matrix
+generate_positive_definite_cov_matrix <- function(n_features, sparsity) {
+  # Generate a random sparse covariance matrix
+  cov_matrix <- matrix(0, n_features, n_features)
+  non_zero_entries <- sample(1:(n_features^2), sparsity)
+  cov_matrix[non_zero_entries] <- runif(sparsity, 0.1, 0.5)
+  cov_matrix <- Matrix::nearPD(cov_matrix)$mat  # Ensure positive definiteness
+  return(cov_matrix)
+}
+
+# Set random seed for reproducibility
+set.seed(123)
+
+# Number of samples and features
+n_samples <- 10
+n_features <- 300
+sparsity <- 45000  # Number of non-zero entries in the covariance matrix
+
+# Generate a positive definite covariance matrix with sparsity
+true_cov_matrix <- generate_positive_definite_cov_matrix(n_features, sparsity)
+
+# Generate correlated data using the covariance matrix
+data <- mvrnorm(n_samples, mu = rep(0, n_features), Sigma = true_cov_matrix)
+
+data <- data.frame(data)
+# Plot the correlation matrix of the generated data
+cor_matrix <- cor(data)
+# Convert the correlation matrix to a long format
+cor_matrix_long <- reshape2::melt(cor_matrix)
+
+# Create the heatmap plot using ggplot2
+heatmap_plot <- ggplot(cor_matrix_long, aes(Var1, Var2, fill = value)) +
+  geom_tile() +
+  scale_fill_gradient(low = "#02d7f2", high = "#E93CAC", name = "Correlation") +
+  labs(title = "Correlation Matrix of Generated Data")
+
+# Print the heatmap plot
+print(heatmap_plot)
+```
+
+The parameter we are tuning, alpha, controls an L1 penalty term. We will tune the sparse PCA using the Index of Sparseness or IS. The index of sparseness is defined as
+
+$$IS = \mathrm{PEV}_{pca}\times \mathrm{PEV}_{sparse}\times \mathrm{PS}$$
+
+Where $\mathrm{PEV}_{pca}, \mathrm{PEV}_{sparse}$, and $\mathrm{PS}$ are the Percentage of Explained Variance (PEV) from the selected principal components of the standard PCA, the PEV from the selected principal components of the sparse PCA, and the proportion of sparsity (number of entries equal to zero in the component loadings) respectively.
+
+Tuning penalty term $\alpha$ using index of sparseness:
+
+```{r}
+# 1. Function to create a scree plot from data
+# Use the scree plot to determin the fixed number of principal components to tune using the second function
+create_scree_plot <- function(data) {
+  require(ggplot2)
+  
+  pca_result <- prcomp(data)
+  eigenvalues <- (pca_result$sdev)^2
+  variance_explained <- eigenvalues / sum(eigenvalues) * 100
+  scree_data <- data.frame(PC = 1:length(variance_explained), VarianceExplained = variance_explained)
+
+  scree_plot <- ggplot(scree_data, aes(x = PC, y = VarianceExplained)) +
+    geom_point(color = "steelblue", size = 3) +
+    geom_line(color = "red") +
+    labs(title = "Scree Plot for PCA",
+         x = "Principal Component",
+         y = "Percentage of Variance Explained") +
+    theme_minimal()
+  return(scree_plot)
+}
+
+# 2. Function to perform SPCA tuning using the index of sparseness
+# n_components is the fixed number of principal components to tune on - determined by the skree plot
+tune_spca <- function(data, alpha_grid, n_components) {
+  require(elasticnet)
+
+  PEV_pca <- sum(prcomp(data)$sdev[1:n_components]^2) / sum(prcomp(data)$sdev^2)
+  results <- lapply(alpha_grid, function(alpha) {
+    spca_model <- elasticnet::spca(data, K = n_components, para = rep(alpha, n_components), type = "predictor", sparse = "penalty")
+    PEV_sparse <- sum(spca_model$pev)
+    proportion_of_sparsity <- sum(spca_model$loadings == 0) / length(spca_model$loadings)
+    IS <- PEV_pca * PEV_sparse * proportion_of_sparsity
+    return(list(model = spca_model, IS = IS))
+  })
+  return(results)
+}
+
+# 3. Function to find optimal IS, alpha, and corresponding SPCA model
+# Utility function for retrieving optimal results
+find_optimal_spca <- function(alpha_grid, spca_results) {
+  IS_values <- sapply(spca_results, function(result) result$IS)
+  optimal_index <- which.max(IS_values)
+  optimal_alpha <- alpha_grid[optimal_index]
+  optimal_IS <- IS_values[optimal_index]
+  optimal_spca_model <- spca_results[[optimal_index]]$model
+
+  return(list(optimal_alpha = optimal_alpha, 
+              optimal_IS = optimal_IS, 
+              optimal_spca_model = optimal_spca_model))
+}
+
+# 4. Function to graph the results of the spca tuning
+# displays a graph of IS values vs alpha grid values and labels the maximum IS
+plot_spca_results <- function(alpha_grid, spca_results) {
+  require(ggplot2)
+  IS_values <- sapply(spca_results, function(result) result$IS)
+  optimal_results <- find_optimal_spca(alpha_grid, spca_results)
+  optimal_alpha <- optimal_results$optimal_alpha
+  optimal_IS <- optimal_results$optimal_IS
+
+  plot_data <- data.frame(Alpha = alpha_grid, IS = IS_values)
+  spca_plot <- ggplot(plot_data, aes(x = Alpha, y = IS)) +
+    geom_line(color = "blue") +
+    geom_point(aes(x = optimal_alpha, y = optimal_IS), color = "red", size = 4) +
+    labs(title = "SPCA Tuning: IS vs Alpha",
+         x = "Alpha (Sparsity Parameter)",
+         y = "Index of Sparseness (IS)") +
+    theme_minimal()
+  return(spca_plot)
+}
+
+scree_plot <- create_scree_plot(data)
+print(scree_plot)
+
+n_components <- 3 # based on scree plot
+alpha_grid <- seq(0.05, 1, by = 0.05)
+spca_results <- tune_spca(data, alpha_grid, n_components)
+optimal_results <- find_optimal_spca(alpha_grid, spca_results)
+spca_plot <- plot_spca_results(alpha_grid, spca_results)
+optimal_results$optimal_alpha
+optimal_results$optimal_IS
+print(spca_plot)
+```
+
